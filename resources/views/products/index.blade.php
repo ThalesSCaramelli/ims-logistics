@@ -143,19 +143,18 @@
     @php
         $initials = collect(explode(' ',$client->name))->map(fn($p)=>strtoupper(substr($p,0,1)))->take(2)->join('');
         $containerPrices = $client->containerPrices ?? collect();
-        $boxAdditional   = $client->boxAdditional;
-        $skillAdditional = $client->skillAdditional;
         $hourlyRates     = ($client->hourlyRates ?? collect())->keyBy('service_type');
+        $addlCount       = $client->containerAdditionals->count();
     @endphp
     <div class="cacc">
-        <div class="cacc-hdr" onclick="toggleAcc('{{ $client->id }}')">
+        <div class="cacc-hdr" onclick="toggleAcc('acc-{{ $client->id }}')">
             <div class="cav">{{ $initials }}</div>
             <div style="flex:1">
                 <div style="font-size:14px;font-weight:500">{{ $client->name }}</div>
                 <div style="font-size:12px;color:#73726c">
                     {{ $containerPrices->count() }} container prices
-                    · boxes {{ $boxAdditional ? 'configured' : 'not set' }}
-                    · skills {{ $skillAdditional ? 'configured' : 'not set' }}
+                    · {{ $addlCount }} additionals
+                    · {{ $hourlyRates->count() }} hourly services
                 </div>
             </div>
             <svg class="chevron" id="chev-{{ $client->id }}" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -176,33 +175,81 @@
                         <thead><tr>
                             <th>Size</th>
                             <th>Product (blank = Standard)</th>
-                            <th class="th-c">Client rate / container</th>
-                            <th class="th-w">Worker rate / container</th>
+                            <th class="th-c">Client rate</th>
+                            <th class="th-w">Worker rate</th>
                             <th class="th-m">Margin</th>
+                            <th style="white-space:nowrap;font-size:10px">Box addl</th>
+                            <th style="white-space:nowrap;font-size:10px">Skill addl</th>
                             <th></th>
                         </tr></thead>
                         <tbody id="cp-{{ $client->id }}">
                         @foreach($containerPrices as $price)
-                        @php $m = ($price->client_rate??0) - ($price->worker_rate??0); @endphp
+                        @php $m = ($price->client_rate??0) - ($price->worker_rate??0); $pi = $loop->index; @endphp
                         <tr>
-                            <td style="width:80px">
-                                <select name="prices[{{ $loop->index }}][feet]">
+                            <td style="width:70px">
+                                <select name="prices[{{ $pi }}][feet]">
                                     <option value="20" {{ $price->feet==='20'?'selected':'' }}>20ft</option>
                                     <option value="40" {{ $price->feet==='40'?'selected':'' }}>40ft</option>
                                 </select>
                             </td>
                             <td>
-                                <select name="prices[{{ $loop->index }}][product_id]">
+                                <select name="prices[{{ $pi }}][product_id]">
                                     <option value="">Standard</option>
                                     @foreach($products->where('type','container') as $p)
                                         <option value="{{ $p->id }}" {{ $price->product_id===$p->id?'selected':'' }}>{{ $p->name }}</option>
                                     @endforeach
                                 </select>
                             </td>
-                            <td style="width:140px"><input type="number" name="prices[{{ $loop->index }}][client_rate]" value="{{ $price->client_rate }}" step="0.01" min="0" placeholder="0.00" class="in-c" oninput="calcM(this)"></td>
-                            <td style="width:140px"><input type="number" name="prices[{{ $loop->index }}][worker_rate]" value="{{ $price->worker_rate }}" step="0.01" min="0" placeholder="0.00" class="in-w" oninput="calcM(this)"></td>
-                            <td style="width:80px" class="mc {{ $m>=0?'pos':'neg' }}">${{ number_format(abs($m),2) }}</td>
-                            <td style="width:32px"><button type="button" class="rm" onclick="this.closest('tr').remove()">×</button></td>
+                            <td style="width:110px"><input type="number" name="prices[{{ $pi }}][client_rate]" value="{{ $price->client_rate }}" step="0.01" min="0" placeholder="0.00" class="in-c" oninput="calcM(this)"></td>
+                            <td style="width:110px"><input type="number" name="prices[{{ $pi }}][worker_rate]" value="{{ $price->worker_rate }}" step="0.01" min="0" placeholder="0.00" class="in-w" oninput="calcM(this)"></td>
+                            <td style="width:70px" class="mc {{ $m>=0?'pos':'neg' }}">${{ number_format(abs($m),2) }}</td>
+                            <td style="width:70px;text-align:center">
+                                <button type="button"
+                                    class="btn btn-sm {{ $price->has_box_additional?'btn-primary':'' }}"
+                                    onclick="toggleAddlRow('box-{{ $pi }}-{{ $client->id }}',this)"
+                                    style="font-size:10px;padding:2px 6px">
+                                    Boxes {{ $price->has_box_additional?'✓':'' }}
+                                </button>
+                            </td>
+                            <td style="width:70px;text-align:center">
+                                <button type="button"
+                                    class="btn btn-sm {{ $price->has_skill_additional?'btn-primary':'' }}"
+                                    onclick="toggleAddlRow('skill-{{ $pi }}-{{ $client->id }}',this)"
+                                    style="font-size:10px;padding:2px 6px">
+                                    Skills {{ $price->has_skill_additional?'✓':'' }}
+                                </button>
+                            </td>
+                            <td style="width:28px"><button type="button" class="rm" onclick="var r=this.closest('tr');var n=r.nextElementSibling;var n2=n?n.nextElementSibling:null;if(n)n.remove();if(n2)n2.remove();r.remove()">×</button></td>
+                        </tr>
+                        <tr id="box-{{ $pi }}-{{ $client->id }}" style="{{ $price->has_box_additional?'':'display:none' }}">
+                            <td colspan="8" style="padding:8px 14px;background:#EBF4FF">
+                                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px">
+                                    <strong style="color:#185FA5;min-width:70px">Boxes:</strong>
+                                    <label style="display:flex;align-items:center;gap:4px;color:#73726c">
+                                        <input type="checkbox" name="prices[{{ $pi }}][has_box_additional]" value="1" {{ $price->has_box_additional?'checked':'' }}>
+                                        Enabled
+                                    </label>
+                                    <label style="display:flex;align-items:center;gap:4px;color:#73726c">Threshold <input type="number" name="prices[{{ $pi }}][box_threshold]" value="{{ $price->box_threshold }}" min="0" placeholder="1500" style="width:80px;padding:3px 6px;border:0.5px solid #B5D4F4;border-radius:5px"></label>
+                                    <label style="display:flex;align-items:center;gap:4px;color:#73726c">Block size <input type="number" name="prices[{{ $pi }}][box_block_size]" value="{{ $price->box_block_size }}" min="1" placeholder="500" style="width:70px;padding:3px 6px;border:0.5px solid #B5D4F4;border-radius:5px"></label>
+                                    <label style="display:flex;align-items:center;gap:4px;color:#185FA5">Client $/block <input type="number" name="prices[{{ $pi }}][box_client_rate_per_block]" value="{{ $price->box_client_rate_per_block }}" step="0.01" min="0" placeholder="0.00" style="width:70px;padding:3px 6px;border:0.5px solid #B5D4F4;border-radius:5px"></label>
+                                    <label style="display:flex;align-items:center;gap:4px;color:#3B6D11">Worker $/block <input type="number" name="prices[{{ $pi }}][box_worker_rate_per_block]" value="{{ $price->box_worker_rate_per_block }}" step="0.01" min="0" placeholder="0.00" style="width:70px;padding:3px 6px;border:0.5px solid #C0DD97;border-radius:5px"></label>
+                                </div>
+                            </td>
+                        </tr>
+                        <tr id="skill-{{ $pi }}-{{ $client->id }}" style="{{ $price->has_skill_additional?'':'display:none' }}">
+                            <td colspan="8" style="padding:8px 14px;background:#EAF3DE">
+                                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px">
+                                    <strong style="color:#3B6D11;min-width:70px">Skills:</strong>
+                                    <label style="display:flex;align-items:center;gap:4px;color:#73726c">
+                                        <input type="checkbox" name="prices[{{ $pi }}][has_skill_additional]" value="1" {{ $price->has_skill_additional?'checked':'' }}>
+                                        Enabled
+                                    </label>
+                                    <label style="display:flex;align-items:center;gap:4px;color:#73726c">Threshold <input type="number" name="prices[{{ $pi }}][skill_threshold]" value="{{ $price->skill_threshold }}" min="0" placeholder="20" style="width:80px;padding:3px 6px;border:0.5px solid #C0DD97;border-radius:5px"></label>
+                                    <label style="display:flex;align-items:center;gap:4px;color:#73726c">Block size <input type="number" name="prices[{{ $pi }}][skill_block_size]" value="{{ $price->skill_block_size }}" min="1" placeholder="5" style="width:70px;padding:3px 6px;border:0.5px solid #C0DD97;border-radius:5px"></label>
+                                    <label style="display:flex;align-items:center;gap:4px;color:#185FA5">Client $/block <input type="number" name="prices[{{ $pi }}][skill_client_rate_per_block]" value="{{ $price->skill_client_rate_per_block }}" step="0.01" min="0" placeholder="0.00" style="width:70px;padding:3px 6px;border:0.5px solid #B5D4F4;border-radius:5px"></label>
+                                    <label style="display:flex;align-items:center;gap:4px;color:#3B6D11">Worker $/block <input type="number" name="prices[{{ $pi }}][skill_worker_rate_per_block]" value="{{ $price->skill_worker_rate_per_block }}" step="0.01" min="0" placeholder="0.00" style="width:70px;padding:3px 6px;border:0.5px solid #C0DD97;border-radius:5px"></label>
+                                </div>
+                            </td>
                         </tr>
                         @endforeach
                         </tbody>
@@ -213,74 +260,7 @@
                 </form>
             </div>
 
-            {{-- 2. Box additionals --}}
-            <div class="csec">
-                <div class="csec-title">Box / Carton additionals</div>
-                <form method="POST" action="{{ route('clients.box-additional.save', $client) }}">
-                    @csrf
-                    <div class="addl-grid">
-                        <div class="addl-field">
-                            <label>Threshold (boxes)</label>
-                            <input type="number" name="threshold" value="{{ $boxAdditional?->threshold }}" min="0" placeholder="e.g. 1500">
-                        </div>
-                        <div class="addl-field">
-                            <label>Block size (boxes)</label>
-                            <input type="number" name="block_size" value="{{ $boxAdditional?->block_size }}" min="1" placeholder="e.g. 500">
-                        </div>
-                        <div class="addl-field">
-                            <label>Client rate / block</label>
-                            <input type="number" name="client_rate_per_block" value="{{ $boxAdditional?->client_rate_per_block }}" step="0.01" min="0" placeholder="0.00" class="in-c">
-                        </div>
-                        <div class="addl-field">
-                            <label>Worker rate / block</label>
-                            <input type="number" name="worker_rate_per_block" value="{{ $boxAdditional?->worker_rate_per_block }}" step="0.01" min="0" placeholder="0.00" class="in-w">
-                        </div>
-                    </div>
-                    @if($boxAdditional)
-                    <div class="addl-example">
-                        Example: container with 2100 boxes →
-                        above {{ $boxAdditional->threshold }} = {{ 2100 - $boxAdditional->threshold }} extra →
-                        {{ ceil((2100 - $boxAdditional->threshold) / $boxAdditional->block_size) }} block(s) →
-                        client +${{ number_format(ceil((2100 - $boxAdditional->threshold) / $boxAdditional->block_size) * $boxAdditional->client_rate_per_block, 2) }},
-                        worker +${{ number_format(ceil((2100 - $boxAdditional->threshold) / $boxAdditional->block_size) * $boxAdditional->worker_rate_per_block, 2) }}
-                    </div>
-                    @endif
-                    <div style="display:flex;justify-content:flex-end;margin-top:10px">
-                        <button type="submit" class="btn btn-primary btn-sm">Save box additionals</button>
-                    </div>
-                </form>
-            </div>
-
-            {{-- 3. Skill additionals --}}
-            <div class="csec">
-                <div class="csec-title">Skill additionals</div>
-                <form method="POST" action="{{ route('clients.skill-additional.save', $client) }}">
-                    @csrf
-                    <div class="addl-grid">
-                        <div class="addl-field">
-                            <label>Threshold (skills)</label>
-                            <input type="number" name="threshold" value="{{ $skillAdditional?->threshold }}" min="0" placeholder="e.g. 20">
-                        </div>
-                        <div class="addl-field">
-                            <label>Block size (skills)</label>
-                            <input type="number" name="block_size" value="{{ $skillAdditional?->block_size }}" min="1" placeholder="e.g. 5">
-                        </div>
-                        <div class="addl-field">
-                            <label>Client rate / block</label>
-                            <input type="number" name="client_rate_per_block" value="{{ $skillAdditional?->client_rate_per_block }}" step="0.01" min="0" placeholder="0.00" class="in-c">
-                        </div>
-                        <div class="addl-field">
-                            <label>Worker rate / block</label>
-                            <input type="number" name="worker_rate_per_block" value="{{ $skillAdditional?->worker_rate_per_block }}" step="0.01" min="0" placeholder="0.00" class="in-w">
-                        </div>
-                    </div>
-                    <div style="display:flex;justify-content:flex-end;margin-top:10px">
-                        <button type="submit" class="btn btn-primary btn-sm">Save skill additionals</button>
-                    </div>
-                </form>
-            </div>
-
-            {{-- 4. Hourly services --}}
+            {{-- 2. Hourly services --}}
             <div class="csec">
                 <div class="csec-title">Hourly services</div>
                 <form method="POST" action="{{ route('clients.hourly-rates.save', $client) }}">
@@ -326,6 +306,51 @@
                 </form>
             </div>
 
+            {{-- 5. Container additionals --}}
+            <div class="csec">
+                <div class="csec-title">
+                    Container additionals
+                    <button type="button" class="btn btn-sm" onclick="addAddlRow({{ $client->id }})">+ Add</button>
+                </div>
+                <p style="font-size:12px;color:#73726c;margin-bottom:10px">
+                    Flat fees per container — e.g. Pallet Removal, Extra Weight. These appear as checkboxes on each container in the worksheet.
+                </p>
+                <form method="POST" action="{{ route('clients.container-additionals.save', $client) }}">
+                    @csrf
+                    <table class="ptable">
+                        <thead><tr>
+                            <th style="width:180px">Name</th>
+                            <th style="width:80px">Applies to</th>
+                            <th class="th-c">Client rate</th>
+                            <th class="th-w">Worker rate</th>
+                            <th class="th-m">Margin</th>
+                            <th></th>
+                        </tr></thead>
+                        <tbody id="addl-{{ $client->id }}">
+                        @foreach($client->containerAdditionals as $addl)
+                        @php $m = ($addl->client_rate??0) - ($addl->worker_rate??0); @endphp
+                        <tr>
+                            <td><input type="text" name="additionals[{{ $loop->index }}][name]" value="{{ $addl->name }}" placeholder="e.g. Pallet Removal"></td>
+                            <td><select name="additionals[{{ $loop->index }}][feet]">
+                                <option value="both" {{ $addl->feet==='both'?'selected':'' }}>Both</option>
+                                <option value="40"   {{ $addl->feet==='40'?'selected':'' }}>40ft only</option>
+                                <option value="20"   {{ $addl->feet==='20'?'selected':'' }}>20ft only</option>
+                            </select></td>
+                            <td><input type="number" name="additionals[{{ $loop->index }}][client_rate]" value="{{ $addl->client_rate }}" step="0.01" min="0" placeholder="0.00" class="in-c" oninput="calcM(this)"></td>
+                            <td><input type="number" name="additionals[{{ $loop->index }}][worker_rate]" value="{{ $addl->worker_rate }}" step="0.01" min="0" placeholder="0.00" class="in-w" oninput="calcM(this)"></td>
+                            <td class="mc {{ $m>=0?'pos':'neg' }}">${{ number_format(abs($m),2) }}</td>
+                            <td><button type="button" class="rm" onclick="this.closest('tr').remove()">×</button></td>
+                        </tr>
+                        @endforeach
+                        </tbody>
+                    </table>
+                    <div style="display:flex;justify-content:flex-end;margin-top:10px">
+                        <button type="submit" class="btn btn-primary btn-sm">Save additionals</button>
+                    </div>
+                </form>
+            </div>
+
+
         </div>
     </div>
     @endforeach
@@ -346,6 +371,8 @@ var cpCtrs = {};
 function addCPRow(cid) {
     if (!cpCtrs[cid]) cpCtrs[cid] = 0;
     var i = cpCtrs[cid]++;
+    var boxId = 'box-'+i+'-'+cid;
+    var skillId = 'skill-'+i+'-'+cid;
     var tr = document.createElement('tr');
     tr.innerHTML =
         '<td><select name="prices['+i+'][feet]"><option value="20">20ft</option><option value="40">40ft</option></select></td>'+
@@ -353,8 +380,18 @@ function addCPRow(cid) {
         '<td><input type="number" name="prices['+i+'][client_rate]" step="0.01" min="0" placeholder="0.00" class="in-c" oninput="calcM(this)"></td>'+
         '<td><input type="number" name="prices['+i+'][worker_rate]" step="0.01" min="0" placeholder="0.00" class="in-w" oninput="calcM(this)"></td>'+
         '<td class="mc">—</td>'+
-        '<td><button type="button" class="rm" onclick="this.closest(\'tr\').remove()">×</button></td>';
+        '<td><button type="button" class="btn btn-sm" onclick="toggleAddlRow(\''+boxId+'\',this)" style="font-size:10px;padding:2px 6px">Boxes</button></td>'+
+        '<td><button type="button" class="btn btn-sm" onclick="toggleAddlRow(\''+skillId+'\',this)" style="font-size:10px;padding:2px 6px">Skills</button></td>'+
+        '<td><button type="button" class="rm" onclick="var r=this.closest(\'tr\');var n=r.nextElementSibling;var n2=n?n.nextElementSibling:null;if(n)n.remove();if(n2)n2.remove();r.remove()">×</button></td>';
     document.getElementById('cp-'+cid).appendChild(tr);
+    var boxTr = document.createElement('tr');
+    boxTr.id = boxId; boxTr.style.display='none';
+    boxTr.innerHTML = '<td colspan="8" style="padding:8px 14px;background:#EBF4FF"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px"><strong style="color:#185FA5;min-width:70px">Boxes:</strong><label style="display:flex;align-items:center;gap:4px;color:#73726c"><input type="checkbox" name="prices['+i+'][has_box_additional]" value="1"> Enabled</label><label style="display:flex;align-items:center;gap:4px;color:#73726c">Threshold <input type="number" name="prices['+i+'][box_threshold]" min="0" placeholder="1500" style="width:80px;padding:3px 6px;border:0.5px solid #B5D4F4;border-radius:5px"></label><label style="display:flex;align-items:center;gap:4px;color:#73726c">Block <input type="number" name="prices['+i+'][box_block_size]" min="1" placeholder="500" style="width:70px;padding:3px 6px;border:0.5px solid #B5D4F4;border-radius:5px"></label><label style="display:flex;align-items:center;gap:4px;color:#185FA5">Client $/block <input type="number" name="prices['+i+'][box_client_rate_per_block]" step="0.01" placeholder="0.00" style="width:70px;padding:3px 6px;border:0.5px solid #B5D4F4;border-radius:5px"></label><label style="display:flex;align-items:center;gap:4px;color:#3B6D11">Worker $/block <input type="number" name="prices['+i+'][box_worker_rate_per_block]" step="0.01" placeholder="0.00" style="width:70px;padding:3px 6px;border:0.5px solid #C0DD97;border-radius:5px"></label></div></td>';
+    document.getElementById('cp-'+cid).appendChild(boxTr);
+    var skillTr = document.createElement('tr');
+    skillTr.id = skillId; skillTr.style.display='none';
+    skillTr.innerHTML = '<td colspan="8" style="padding:8px 14px;background:#EAF3DE"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px"><strong style="color:#3B6D11;min-width:70px">Skills:</strong><label style="display:flex;align-items:center;gap:4px;color:#73726c"><input type="checkbox" name="prices['+i+'][has_skill_additional]" value="1"> Enabled</label><label style="display:flex;align-items:center;gap:4px;color:#73726c">Threshold <input type="number" name="prices['+i+'][skill_threshold]" min="0" placeholder="20" style="width:80px;padding:3px 6px;border:0.5px solid #C0DD97;border-radius:5px"></label><label style="display:flex;align-items:center;gap:4px;color:#73726c">Block <input type="number" name="prices['+i+'][skill_block_size]" min="1" placeholder="5" style="width:70px;padding:3px 6px;border:0.5px solid #C0DD97;border-radius:5px"></label><label style="display:flex;align-items:center;gap:4px;color:#185FA5">Client $/block <input type="number" name="prices['+i+'][skill_client_rate_per_block]" step="0.01" placeholder="0.00" style="width:70px;padding:3px 6px;border:0.5px solid #B5D4F4;border-radius:5px"></label><label style="display:flex;align-items:center;gap:4px;color:#3B6D11">Worker $/block <input type="number" name="prices['+i+'][skill_worker_rate_per_block]" step="0.01" placeholder="0.00" style="width:70px;padding:3px 6px;border:0.5px solid #C0DD97;border-radius:5px"></label></div></td>';
+    document.getElementById('cp-'+cid).appendChild(skillTr);
 }
 
 function calcM(input) {
@@ -368,6 +405,14 @@ function calcM(input) {
     mc.className = 'mc '+(m>=0?'pos':'neg');
 }
 
+function toggleAddlRow(id, btn) {
+    var row = document.getElementById(id);
+    if (!row) return;
+    var hidden = row.style.display === 'none';
+    row.style.display = hidden ? '' : 'none';
+    btn.classList.toggle('btn-primary', hidden);
+}
+
 function calcHM(input) {
     var row = input.closest('tr');
     var ci = row.querySelector('.in-c');
@@ -378,5 +423,24 @@ function calcHM(input) {
     mc.textContent = '$'+Math.abs(m).toFixed(2);
     mc.className = 'mc '+(m>=0?'pos':'neg');
 }
+
+// Container additionals rows
+var addlCtrs = {};
+@foreach($clients as $c) addlCtrs[{{ $c->id }}] = {{ $c->containerAdditionals->count() }}; @endforeach
+
+function addAddlRow(cid) {
+    if (!addlCtrs[cid]) addlCtrs[cid] = 0;
+    var i = addlCtrs[cid]++;
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td><input type="text" name="additionals['+i+'][name]" placeholder="e.g. Pallet Removal"></td>'+
+        '<td><select name="additionals['+i+'][feet]"><option value="both">Both</option><option value="40">40ft only</option><option value="20">20ft only</option></select></td>'+
+        '<td><input type="number" name="additionals['+i+'][client_rate]" step="0.01" min="0" placeholder="0.00" class="in-c" oninput="calcM(this)"></td>'+
+        '<td><input type="number" name="additionals['+i+'][worker_rate]" step="0.01" min="0" placeholder="0.00" class="in-w" oninput="calcM(this)"></td>'+
+        '<td class="mc">—</td>'+
+        '<td><button type="button" class="rm" onclick="this.closest(\'tr\').remove()">×</button></td>';
+    document.getElementById('addl-'+cid).appendChild(tr);
+}
+
 </script>
 @endpush

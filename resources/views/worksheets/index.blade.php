@@ -22,6 +22,9 @@
         .nav-tab.active{color:#185FA5;border-bottom-color:#185FA5;font-weight:500}
         .nav-tab .badge{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;background:#EF9F27;color:#fff;border-radius:10px;font-size:9px;font-weight:600;margin-left:5px;padding:0 4px}
 
+        .cacc-body{display:none;border-top:0.5px solid rgba(0,0,0,0.08)}
+        .cacc-body.open{display:block}  
+
         .page{padding:20px;max-width:1100px;margin:0 auto}
         .page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px}
         .page-title{font-size:18px;font-weight:500}
@@ -138,11 +141,26 @@
             <span class="chip ca" onclick="chipFilter('approved',this)">Approved</span>
             <span class="chip ca" onclick="chipFilter('paid',this)">Paid</span>
         </div>
-        <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
-            <label style="font-size:12px;color:#73726c">Week:</label>
-            <form method="GET" action="{{ route('worksheets.index') }}" style="display:inline">
-                <input type="week" name="week" value="{{ $week }}" style="font-size:12px;padding:5px 9px;border:0.5px solid #c2c0b6;border-radius:8px;font-family:inherit" onchange="this.form.submit()">
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+            @php
+                [$wy, $wn] = str_contains($week, '-W') ? explode('-W', $week) : explode('-', $week);
+                $prevWeek = \Carbon\Carbon::now()->setISODate((int)$wy, (int)$wn)->subWeek()->format('Y-\WW');
+                $nextWeek = \Carbon\Carbon::now()->setISODate((int)$wy, (int)$wn)->addWeek()->format('Y-\WW');
+                $thisWeek = now()->format('Y-\WW');
+            @endphp
+            <a href="{{ route('worksheets.index', ['week' => $prevWeek]) }}" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:0.5px solid #c2c0b6;border-radius:6px;background:#fff;color:#73726c;font-size:18px;text-decoration:none;line-height:1">‹</a>
+
+            <form method="GET" action="{{ route('worksheets.index') }}">
+                <input type="week" name="week" value="{{ $week }}"
+                    class="date-input" onchange="this.form.submit()">
             </form>
+
+            <a href="{{ route('worksheets.index', ['week' => $nextWeek]) }}" style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:0.5px solid #c2c0b6;border-radius:6px;background:#fff;color:#73726c;font-size:18px;text-decoration:none;line-height:1">›</a>
+
+            @if($week !== $thisWeek)
+            <a href="{{ route('worksheets.index') }}"
+            style="font-size:12px;padding:5px 10px;border:0.5px solid #c2c0b6;border-radius:7px;background:#fff;color:#1a1a18;text-decoration:none">This week</a>
+            @endif
         </div>
     </div>
 

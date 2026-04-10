@@ -43,6 +43,12 @@
 @endpush
 
 @section('content')
+@if($isApproved)
+<div style="background:#EAF3DE;border:0.5px solid #C0DD97;border-radius:8px;padding:10px 16px;margin:12px 20px 0;font-size:13px;color:#27500A;display:flex;align-items:center;gap:8px">
+    <span>✓</span>
+    <span>This worksheet was approved on <strong>{{ $worksheet->approved_at->format('d M Y \a\t H:i') }}</strong> and is now locked for editing.</span>
+</div>
+@endif
 @php
     $statusVal = $worksheet->sync_status?->value ?? $worksheet->sync_status ?? 'draft';
     $isApproved = in_array($statusVal, ['pending','approved','paid']);
@@ -186,6 +192,30 @@
                                 <button type="button" class="add-btn" style="margin-top:6px" onclick="addPart({{ $ci }},{{ $cid }})">+ Add part</button>
                                 <button type="button" class="split-toggle" style="margin-top:6px" onclick="disableSplit({{ $ci }},{{ $cid }})">Remove split — use simple mode</button>
                             </div>
+                            {{-- Container additionals --}}
+                            @php
+                                $availAddl = $clientAdditionals->filter(fn($a) => $a->feet === 'both' || $a->feet === $container->feet);
+                                $markedIds = $container->additionals->pluck('additional_id')->toArray();
+                            @endphp
+                            @if($availAddl->isNotEmpty())
+                            <div style="margin-top:10px">
+                                <div class="exp-label">Additionals</div>
+                                <div style="display:flex;flex-wrap:wrap;gap:6px">
+                                @foreach($availAddl as $addl)
+                                @php $checked = in_array($addl->id, $markedIds); @endphp
+                                <label style="display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;border:0.5px solid {{ $checked ? '#85B7EB' : '#c2c0b6' }};border-radius:7px;background:{{ $checked ? '#E6F1FB' : '#fff' }};cursor:pointer">
+                                    <input type="checkbox"
+                                        name="containers[{{ $cid }}][additionals][]"
+                                        value="{{ $addl->id }}"
+                                        {{ $checked ? 'checked' : '' }}
+                                        onchange="this.closest('label').style.background=this.checked?'#E6F1FB':'#fff';this.closest('label').style.borderColor=this.checked?'#85B7EB':'#c2c0b6'">
+                                    {{ $addl->name }}
+                                    <span style="color:#73726c">(+${{ number_format($addl->client_rate,0) }})</span>
+                                </label>
+                                @endforeach
+                                </div>
+                            </div>
+                            @endif
                             <input class="desc-input" name="containers[{{ $cid }}][description]" placeholder="Description (optional)..." value="{{ $container->description_extra }}">
                         </div>
                     </td>
@@ -307,7 +337,12 @@
         </div>
 
         <div class="card">
-            <div class="card-title">Calculation preview</div>
+            <div class="card-title">
+                {{ $isApproved ? 'Approved amounts' : 'Calculation preview' }}
+                @if($isApproved)
+                    <span style="font-size:10px;background:#EAF3DE;color:#3B6D11;padding:2px 8px;border-radius:10px">Locked</span>
+                @endif
+            </div>
             @if(isset($preview['error']))
                 <div style="font-size:11px;color:#73726c;font-style:italic">No pricing configured yet.</div>
             @else
@@ -536,5 +571,12 @@ function applyOcrData(ext) {
         alert('OCR applied: ' + ext.container_count + ' container(s) pre-filled. Please review and correct any errors.');
     }
 }
+
+@if($isApproved)
+document.querySelectorAll('#ws-form input, #ws-form select, #ws-form textarea, #ws-form button:not(.btn-primary)').forEach(function(el) {
+    el.disabled = true;
+});
+@endif
+
 </script>
 @endpush

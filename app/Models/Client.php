@@ -8,7 +8,6 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Client extends Model
 {
-   
     protected $fillable = [
         'name', 'abn', 'contact_name', 'contact_email',
         'contact_phone', 'requires_induction', 'notes', 'is_active'
@@ -16,17 +15,8 @@ class Client extends Model
 
     protected $casts = ['is_active' => 'boolean'];
 
-    public function containerPrices(): HasMany {
-        return $this->hasMany(ClientContainerPrice::class)->orderBy('feet')->orderBy('product_id');
-    }
-    public function boxAdditionals(): HasMany {
-        return $this->hasMany(ClientBoxAdditional::class)->orderBy('feet');
-    }
-    public function skillAdditionals(): HasMany {
-        return $this->hasMany(ClientSkillAdditional::class)->orderBy('feet');
-    }
-    
     // ── Sites ─────────────────────────────────────────────────────────
+
     public function sites(): HasMany
     {
         return $this->hasMany(Site::class);
@@ -37,95 +27,52 @@ class Client extends Model
         return $this->hasMany(Site::class)->where('is_active', true);
     }
 
-    // ── Container prices ──────────────────────────────────────────────
-    public function prices(): HasMany
+    // ── Container prices (client_container_prices) ────────────────────
+    // Includes box/skill additional thresholds as columns on each row
+
+    public function containerPrices(): HasMany
     {
-        return $this->hasMany(ClientPrice::class);
+        return $this->hasMany(ClientContainerPrice::class)
+            ->orderBy('feet')
+            ->orderBy('product_id');
     }
 
-    // ── Skills pricing ────────────────────────────────────────────────
-    public function skillRate(): HasOne
-    {
-        return $this->hasOne(ClientSkillRate::class);
-    }
+    // ── Hourly rates (client_hourly_rates) ────────────────────────────
 
-    public function skillTiers(): HasMany
+    public function hourlyRates(): HasMany
     {
-        return $this->hasMany(WorkerSkillTier::class)->orderBy('sort_order');
-    }
-
-    // ── Boxes pricing ─────────────────────────────────────────────────
-    public function boxRate(): HasOne
-    {
-        return $this->hasOne(ClientBoxRate::class);
-    }
-
-    public function boxTiers(): HasMany
-    {
-        return $this->hasMany(WorkerBoxTier::class)->orderBy('sort_order');
-    }
-
-    // ── Hourly services ───────────────────────────────────────────────
-    public function hourlyRates(): HasMany {
         return $this->hasMany(ClientHourlyRate::class);
     }
 
-    // ── Price lookup helpers ──────────────────────────────────────────
+    // ── Container additionals (client_container_additionals) ──────────
+    // Manual per-container flags: pallet removal, extra weight, etc.
 
-    /**
-     * Get container price for a specific size and product.
-     * Falls back: exact match → size only → product only → any.
-     */
-    public function getContainerPrice(?string $feet, ?int $productId): ?ClientPrice
+    public function containerAdditionals(): HasMany
     {
-        $prices = $this->prices;
-
-        // Try exact match first
-        $match = $prices->first(fn($p) =>
-            $p->feet == $feet && $p->product_id == $productId
-        );
-        if ($match) return $match;
-
-        // Size only
-        $match = $prices->first(fn($p) =>
-            $p->feet == $feet && is_null($p->product_id)
-        );
-        if ($match) return $match;
-
-        // Product only
-        $match = $prices->first(fn($p) =>
-            is_null($p->feet) && $p->product_id == $productId
-        );
-        if ($match) return $match;
-
-        // Any (catch-all)
-        return $prices->first(fn($p) => is_null($p->feet) && is_null($p->product_id));
+        return $this->hasMany(ClientContainerAdditional::class)
+            ->orderBy('sort_order');
     }
 
-    /**
-     * Get worker skill bonus for a given quantity using tiers.
-     */
-    public function getSkillBonus(int $qty): float
-    {
-        foreach ($this->skillTiers as $tier) {
-            $inRange = $qty >= $tier->from_qty &&
-                       (is_null($tier->to_qty) || $qty <= $tier->to_qty);
-            if ($inRange) return (float) $tier->worker_bonus;
-        }
-        return 0.0;
-    }
+    // ── Helpers ───────────────────────────────────────────────────────
 
     /**
-     * Get worker box bonus for a given quantity using tiers.
+     * Get the container price row for a specific feet + product combination.
+     * Falls back to product_id = null (Standard) if no exact match.
      */
-    public function getBoxBonus(int $qty): float
+    public function getContainerPrice(string $feet, ?int $productId): ?ClientContainerPrice
     {
-        foreach ($this->boxTiers as $tier) {
-            $inRange = $qty >= $tier->from_qty &&
-                       (is_null($tier->to_qty) || $qty <= $tier->to_qty);
-            if ($inRange) return (float) $tier->worker_bonus;
-        }
-        return 0.0;
+        $prices = $this->containerPrices;
+
+        // Exact match (feet + product)
+        $match = $prices->first(fn($p) =>
+            $p->feet === $feet && $p->product_id === $productId
+        );
+        if ($match) return $match;
+
+        // Fallback to Standard (product_id = null) for this feet size
+        return $prices->first(fn($p) =>
+            $p->feet === $feet && is_null($p->product_id)
+        );
     }
 
     /**

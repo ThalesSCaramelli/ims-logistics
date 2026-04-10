@@ -9,11 +9,12 @@ use App\Models\Product;
 use App\Models\ContainerWorker;
 use App\Models\WorksheetService;
 use App\Models\ClientContainerPrice;
+use App\Models\ClientContainerAdditional;
+use App\Models\JobContainerAdditional;
 use App\Models\ClientHourlyRate;
 use App\Models\SpecialDay;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
-use App\Models\Job;
 
 class WorksheetController extends Controller
 {
@@ -21,17 +22,12 @@ class WorksheetController extends Controller
     {
         $week = $request->get('week', now()->format('Y-\WW'));
 
-        // Handle both formats: "2026-W14" (from HTML input) and "2026-14" (fallback)
-        if (str_contains($week, '-W')) {
-            [$year, $isoWeek] = explode('-W', $week);
-        } else {
-            [$year, $isoWeek] = explode('-', $week);
-        }
+        [$year, $isoWeek] = str_contains($week, '-W')
+            ? explode('-W', $week)
+            : explode('-', $week);
 
-        $weekStart = Carbon::now()
-            ->setISODate((int) $year, (int) $isoWeek)
-            ->startOfWeek();
-        $weekEnd = $weekStart->copy()->endOfWeek();
+        $weekStart = Carbon::now()->setISODate((int)$year, (int)$isoWeek)->startOfWeek();
+        $weekEnd   = $weekStart->copy()->endOfWeek();
 
         $worksheets = Worksheet::whereBetween('created_at', [$weekStart, $weekEnd])
             ->with(['job.site.client', 'job.book.workers', 'job.containers'])
@@ -56,6 +52,7 @@ class WorksheetController extends Controller
             'job.book.workers',
             'job.containers.product',
             'job.containers.workers.worker',
+            'job.containers.additionals',
             'services',
         ]);
 
@@ -77,54 +74,39 @@ class WorksheetController extends Controller
             '40' => $this->clientProductsForFeet($client->id, '40'),
         ];
 
-        // Serialize for JS (no arrow functions)
+        // Client additionals available for this client
+        $clientAdditionals = ClientContainerAdditional::where('client_id', $client->id)
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->get();
+
+        // Serialize for JS
         $workersJson = $allWorkers->map(function($w) {
             $parts = explode(' ', $w->name);
             $initials = strtoupper(substr($parts[0],0,1)) . (isset($parts[1]) ? strtoupper(substr($parts[1],0,1)) : '');
             return ['id' => $w->id, 'initials' => $initials, 'first' => $parts[0]];
         })->values();
 
-        $preview = $this->buildPreview($worksheet, $allWorkers);
+       $isApproved = !is_null($worksheet->approved_at);
+
+        if ($isApproved && $worksheet->filled_data) {
+            $preview = json_decode($worksheet->filled_data, true);
+        } else {
+            $preview = $this->buildPreview($worksheet, $allWorkers);
+        }
 
         return view('worksheets.show', compact(
             'worksheet', 'productsByFeet', 'bookWorkers', 'allWorkers',
-            'preview', 'workersJson'
+            'preview', 'workersJson', 'clientAdditionals', 'isApproved'
         ));
-    }
-
-    private function clientProductsForFeet(int $clientId, string $feet): array
-    {
-        $prices = ClientContainerPrice::where('client_id', $clientId)
-            ->where('feet', $feet)
-            ->with('product')
-            ->get();
-
-        //$list = [['id' => null, 'name' => 'Standard']];
-        $list = [];
-        foreach ($prices as $price) {
-            if ($price->product_id === null) {
-                // null product_id = Standard
-                $list[] = ['id' => null, 'name' => 'Standard'];
-            } elseif ($price->product) {
-                $list[] = ['id' => $price->product_id, 'name' => $price->product->name];
-            }
-        }
-
-        return $list;
-    }
-
-    public function create(Job $job)
-    {
-        $worksheet = Worksheet::firstOrCreate(
-            ['job_id' => $job->id],
-            ['sync_status' => 'draft', 'observations' => null]
-        );
-
-        return redirect()->route('worksheets.show', $worksheet);
     }
 
     public function save(Request $request, Worksheet $worksheet)
     {
+        if (!is_null($worksheet->approved_at)) {
+            return back()->with('error', 'This worksheet has already been approved and cannot be edited.');
+        }
+
         $errors = [];
         $seenNumbers = [];
 
@@ -150,19 +132,23 @@ class WorksheetController extends Controller
             }
         }
 
-        // Valida produto por container
-        $client = $worksheet->job->site->client;
-        foreach ($request->containers ?? [] as $cid => $data) {
-            $feet      = $data['feet'] ?? '40';
-            $productId = $data['product_id'] ?: null;
-            $exists = ClientContainerPrice::where('client_id', $client->id)
-                ->where('feet', $feet)
-                ->where(function($q) use ($productId) {
-                    $q->where('product_id', $productId)
-                    ->orWhereNull('product_id');
-                })->exists();
-            if (!$exists) {
-                $errors[] = "Container {$cid}: product not configured for this client ({$feet}ft).";
+        foreach ($request->new_containers ?? [] as $idx => $data) {
+            $num = trim($data['container_number'] ?? '');
+            if (empty($num)) {
+                $errors[] = "All new containers must have a container number.";
+                break;
+            }
+            $upper = strtoupper($num);
+            if (isset($seenNumbers[$upper])) {
+                $errors[] = "Container number \"{$num}\" appears more than once in this worksheet.";
+            }
+            $seenNumbers[$upper] = true;
+
+            if (!empty($data['split'])) {
+                $total = round(collect($data['parts'] ?? [])->sum(fn($p) => floatval($p['qty'] ?? 0)), 2);
+                if (abs($total - 1.0) > 0.01) {
+                    $errors[] = "Container {$num}: split parts must total 1.0 (currently {$total}).";
+                }
             }
         }
 
@@ -187,6 +173,7 @@ class WorksheetController extends Controller
             ]);
 
             $this->saveContainerWorkers($containerId, $data);
+            $this->saveContainerAdditionals($containerId, $data);
         }
 
         // Create new containers added via JS (keyed by temp index)
@@ -207,6 +194,7 @@ class WorksheetController extends Controller
             ]);
 
             $this->saveContainerWorkers($container->id, $data);
+            $this->saveContainerAdditionals($container->id, $data);
         }
 
         // Rebuild services
@@ -229,6 +217,10 @@ class WorksheetController extends Controller
 
     public function approve(Request $request, Worksheet $worksheet)
     {
+        if (!is_null($worksheet->approved_at)) {
+            return back()->with('error', 'This worksheet is already approved.');
+        }
+
         // Save first
         $saveRequest = $request;
         $this->save($saveRequest, $worksheet);
@@ -252,7 +244,7 @@ class WorksheetController extends Controller
         $calc = $this->calculatePayments($worksheet, $allWorkers);
 
         $worksheet->update([
-            'sync_status' => 'pending',
+            'sync_status' => 'approved',
             'approved_by' => auth()->id(),
             'approved_at' => now(),
             'filled_data' => json_encode($calc),
@@ -264,11 +256,15 @@ class WorksheetController extends Controller
     public function addWorker(Request $request, Worksheet $worksheet)
     {
         $request->validate(['worker_id' => 'required|exists:workers,id']);
-        // Worker is now available to be assigned to containers in this worksheet
-        // We just return success — the UI will show them as available
-        return back()->with('success', 'Worker added to job.');
-    }
 
+        $book = $worksheet->job->book;
+
+        if (!$book->workers()->where('worker_id', $request->worker_id)->exists()) {
+            $book->workers()->attach($request->worker_id);
+        }
+
+        return back()->with('success', 'Worker added.');
+    }
     // ── Container workers helper ──────────────────────────────────────
     private function saveContainerWorkers(int $containerId, array $data): void
     {
@@ -295,6 +291,18 @@ class WorksheetController extends Controller
                     'qty'          => 1.00,
                 ]);
             }
+        }
+    }
+
+    private function saveContainerAdditionals(int $containerId, array $data): void
+    {
+        JobContainerAdditional::where('container_id', $containerId)->delete();
+
+        foreach ($data['additionals'] ?? [] as $additionalId) {
+            JobContainerAdditional::create([
+                'container_id'  => $containerId,
+                'additional_id' => $additionalId,
+            ]);
         }
     }
 
@@ -429,5 +437,35 @@ class WorksheetController extends Controller
             'worker_totals' => $workerTotals,
             'is_holiday'    => $isHoliday,
         ];
+    }
+
+    private function clientProductsForFeet(int $clientId, string $feet): array
+    {
+        $prices = ClientContainerPrice::where('client_id', $clientId)
+            ->where('feet', $feet)
+            ->with('product')
+            ->get();
+
+        $list = [];
+
+        foreach ($prices as $price) {
+            if ($price->product_id === null) {
+                $list[] = ['id' => null, 'name' => 'Standard'];
+            } elseif ($price->product) {
+                $list[] = ['id' => $price->product_id, 'name' => $price->product->name];
+            }
+        }
+
+        return $list;
+    }
+
+    public function create(\App\Models\Job $job)
+    {
+        $worksheet = Worksheet::firstOrCreate(
+            ['job_id' => $job->id],
+            ['sync_status' => 'draft', 'observations' => null]
+        );
+
+        return redirect()->route('worksheets.show', $worksheet);
     }
 }

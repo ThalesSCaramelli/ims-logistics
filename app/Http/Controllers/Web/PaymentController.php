@@ -43,7 +43,6 @@ class PaymentController extends Controller
             'total'        => $workerPayments->sum('payable_amount'),
             'paid_count'   => $workerPayments->where('is_paid', true)->count(),
             'unpaid_count' => $workerPayments->where('is_paid', false)->count(),
-            //'total_workers' => $totalWorkers,
             'outstanding'  => $workerPayments->where('is_paid', false)->sum('payable_amount'),
             'jobs_count'   => $worksheets->count(),
         ];
@@ -153,18 +152,37 @@ class PaymentController extends Controller
         $byWorker      = [];
         $weekStartDate = $weekStart->toDateString();
 
-        foreach ($worksheets as $ws) {
-            // Collect all worker IDs that worked on containers in this worksheet
-            $containerWorkerIds = $ws->job->containers
-                ->flatMap(fn($c) => $c->workers->pluck('worker_id'))
-                ->unique();
+        // Collect public holidays in this week
+        $weekEnd     = $weekStart->copy()->endOfWeek();
+        $holidayDates = \App\Models\SpecialDay::where('is_active', true)
+            ->whereBetween('date', [$weekStart->toDateString(), $weekEnd->toDateString()])
+            ->pluck('date')
+            ->map(fn($d) => \Carbon\Carbon::parse($d)->toDateString())
+            ->toArray();
 
-            // Fallback to book workers if no container workers set
-            if ($containerWorkerIds->isEmpty()) {
-                $containerWorkerIds = $ws->job->book->workers->pluck('id');
+        foreach ($worksheets as $ws) {
+            // Decode filled_data — source of truth for approved values
+            $filled = $ws->filled_data ? json_decode($ws->filled_data, true) : null;
+            $workerTotalsMap = [];
+            if ($filled && !empty($filled['worker_totals'])) {
+                foreach ($filled['worker_totals'] as $wt) {
+                    $workerTotalsMap[$wt['id']] = (float) $wt['amount'];
+                }
             }
 
-            foreach ($containerWorkerIds as $workerId) {
+            $workerIds = !empty($workerTotalsMap)
+                ? array_keys($workerTotalsMap)
+                : $ws->job->containers->flatMap(fn($c) => $c->workers->pluck('worker_id'))->unique()->toArray();
+
+            if (empty($workerIds)) {
+                $workerIds = $ws->job->book->workers->pluck('id')->toArray();
+            }
+
+            $jobDate    = \Carbon\Carbon::parse($ws->job->date);
+            $isWeekend  = $jobDate->isWeekend();
+            $isHoliday  = in_array($jobDate->toDateString(), $holidayDates);
+
+            foreach ($workerIds as $workerId) {
                 $worker = $ws->job->book->workers->find($workerId)
                     ?? Worker::find($workerId);
 
@@ -172,34 +190,78 @@ class PaymentController extends Controller
 
                 if (!isset($byWorker[$workerId])) {
                     $byWorker[$workerId] = [
-                        'worker'       => $worker,
-                        'jobs_count'   => 0,
-                        'total_amount' => 0,
-                        'lines'        => [],
+                        'worker'            => $worker,
+                        'jobs_count'        => 0,
+                        'total_amount'      => 0,
+                        'total_hours'       => 0,
+                        'weekday_earned'    => 0,
+                        'weekend_earned'    => 0,
+                        'weekdays_worked'   => [],  // unique weekday dates worked
+                        'lines'             => [],
                     ];
                 }
 
-                // Use worksheet approved amounts if available, otherwise estimate
-                $workerTotal = $ws->worker_totals[$workerId] ?? null;
-                $lineAmount  = $workerTotal ? (float)$workerTotal : 0;
+                $lineAmount = $workerTotalsMap[$workerId] ?? 0;
 
                 $byWorker[$workerId]['jobs_count']++;
                 $byWorker[$workerId]['total_amount'] += $lineAmount;
+
+                if ($isWeekend || $isHoliday) {
+                    $byWorker[$workerId]['weekend_earned'] += $lineAmount;
+                } else {
+                    $byWorker[$workerId]['weekday_earned'] += $lineAmount;
+                    // Track unique weekdays worked (for minimum calculation)
+                    $byWorker[$workerId]['weekdays_worked'][] = $jobDate->toDateString();
+                }
+
                 $byWorker[$workerId]['lines'][] = [
-                    'date'   => $ws->job->date->format('d M Y'),
-                    'client' => $ws->job->site->client->name,
-                    'amount' => $lineAmount,
+                    'date'         => $jobDate,
+                    'client'       => $ws->job->site->client->name,
+                    'site'         => $ws->job->site->name ?? '',
+                    'is_weekend'   => $isWeekend,
+                    'is_holiday'   => $isHoliday,
+                    'hours'        => 0,
+                    'rate'         => 0,
+                    'labour'       => $lineAmount,
+                    'additionals'  => 0,
+                    'deductions'   => 0,
+                    'total'        => $lineAmount,
+                    'amount'       => $lineAmount,
+                    'worksheet_id' => $ws->id,
+                    'worker_id'    => $workerId,
                 ];
             }
         }
 
         return collect($byWorker)->map(function ($wp) use ($weekStartDate) {
-            $isPaid = WorkerPayment::where('worker_id', $wp['worker']->id)
+            $worker  = $wp['worker'];
+            $isPaid  = WorkerPayment::where('worker_id', $worker->id)
                 ->where('week_period', $weekStartDate)
                 ->exists();
 
+            // ── Minimum weekly calculation ─────────────────────────────────
+            $topUp        = 0;
+            $minWeekly    = (float) ($worker->min_weekly ?? 0);
+            $weekdayDates = array_unique($wp['weekdays_worked']);
+            $daysWorked   = count($weekdayDates);
+
+            if ($minWeekly > 0 && $daysWorked > 0) {
+                $dailyRate      = $minWeekly / 5;
+                $minimumOwed    = round($dailyRate * $daysWorked, 2);
+                $weekdayEarned  = round($wp['weekday_earned'], 2);
+
+                if ($weekdayEarned < $minimumOwed) {
+                    $topUp = $minimumOwed - $weekdayEarned;
+                }
+            }
+
+            $payable = round($wp['weekday_earned'] + $topUp + $wp['weekend_earned'], 2);
+
             return array_merge($wp, [
-                'payable_amount' => round($wp['total_amount'], 2),
+                'days_worked'    => $daysWorked,
+                'minimum_owed'   => $minWeekly > 0 ? round(($minWeekly / 5) * $daysWorked, 2) : 0,
+                'top_up'         => round($topUp, 2),
+                'payable_amount' => $payable,
                 'is_paid'        => $isPaid,
             ]);
         })->sortBy('worker.name')->values();

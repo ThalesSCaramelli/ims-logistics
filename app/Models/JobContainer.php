@@ -17,7 +17,13 @@ class JobContainer extends Model
 
     public function job(): BelongsTo { return $this->belongsTo(Job::class); }
     public function product(): BelongsTo { return $this->belongsTo(Product::class); }
+    
     public function workers(): HasMany {
         return $this->hasMany(ContainerWorker::class, 'container_id');
+    }
+
+    public function additionals(): HasMany
+    {
+        return $this->hasMany(JobContainerAdditional::class, 'container_id');
     }
 }

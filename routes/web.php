@@ -123,4 +123,7 @@ Route::middleware(['auth'])->group(function () {
     Route::patch('/planning/{demand}/allocate', [PlanningController::class, 'markAllocated'])->name('planning.mark-allocated');
     Route::patch('/planning/{demand}/cancel', [PlanningController::class, 'cancel'])->name('planning.cancel');
     Route::delete('/planning/{demand}', [PlanningController::class, 'destroy'])->name('planning.destroy');
+
+    // Container Additional
+    Route::post('/clients/{client}/container-additionals', [ProductController::class, 'saveContainerAdditionals'])->name('clients.container-additionals.save');
 });
